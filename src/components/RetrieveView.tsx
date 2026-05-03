@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Unlock,
@@ -15,8 +15,10 @@ import {
   Copy,
   Check,
   Download,
+  Link2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -43,21 +45,61 @@ export function RetrieveView() {
   );
   const [showResult, setShowResult] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [storedSalt, setStoredSalt] = useState<string | undefined>();
+  const urlInputRef = useRef<HTMLInputElement>(null);
+
+  // Extract code and salt from URL or fragment
+  const extractFromUrl = useCallback((url: string): { code: string; salt?: string } | null => {
+    try {
+      // Check if it's a full URL
+      if (url.includes('/retrieve/')) {
+        const codeMatch = url.match(/\/retrieve\/(\d{6})/);
+        const hashMatch = url.match(/#(.+)$/);
+        if (codeMatch) {
+          const code = codeMatch[1];
+          let salt: string | undefined;
+          if (hashMatch) {
+            const fragment = parseMagicLinkFragment(hashMatch[1]);
+            if (fragment && fragment.code === code) {
+              salt = fragment.salt;
+            }
+          }
+          return { code, salt };
+        }
+      }
+      
+      // Check if it's just a 6-digit code
+      const codeOnly = url.replace(/\D/g, '').match(/(\d{6})/);
+      if (codeOnly) {
+        return { code: codeOnly[1] };
+      }
+      
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   // Check URL fragment on mount (magic link handling)
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hash = window.location.hash.slice(1);
-      if (hash) {
-        const fragment = parseMagicLinkFragment(hash);
-        if (fragment) {
-          setCode(fragment.code.split(""));
-          // Auto-retrieve if fragment is present
-          handleRetrieve(fragment.code, fragment.salt);
+      const fullUrl = window.location.href;
+      
+      // Try to extract from full URL first
+      const extracted = extractFromUrl(fullUrl) || (hash ? extractFromUrl(`/#${hash}`) : null);
+      
+      if (extracted) {
+        setCode(extracted.code.split(""));
+        setUrlInput(extracted.code);
+        // Store salt for decryption
+        if (extracted.salt) {
+          setStoredSalt(extracted.salt);
         }
       }
     }
-  }, []);
+  }, [extractFromUrl]);
 
   const handleKeyPress = useCallback(
     (key: string) => {
@@ -79,9 +121,33 @@ export function RetrieveView() {
   const handleClear = useCallback(() => {
     if (!isLoading) {
       setCode([]);
+      setUrlInput("");
+      setStoredSalt(undefined);
       setError(null);
+      urlInputRef.current?.focus();
     }
   }, [isLoading]);
+
+  // Handle URL/code paste
+  const handleUrlPaste = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setUrlInput(value);
+    
+    const extracted = extractFromUrl(value);
+    if (extracted) {
+      setCode(extracted.code.split(""));
+      setError(null);
+      if (extracted.salt) {
+        setStoredSalt(extracted.salt);
+      }
+      // Auto-trigger retrieve after a short delay
+      setTimeout(() => {
+        if (extracted.code.length === 6) {
+          handleRetrieve(extracted.code, extracted.salt);
+        }
+      }, 100);
+    }
+  }, [extractFromUrl]);
 
   const handleRetrieve = useCallback(
     async (manualCode?: string, manualSalt?: string) => {
@@ -98,18 +164,19 @@ export function RetrieveView() {
         // Fetch encrypted data from server
         const response = await fetch(`/api/clipboard/${targetCode}`);
         if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
           if (response.status === 404) {
             throw new Error(
-              "Clipboard not found. It may have expired or been deleted."
+              errorData.details || "Clipboard not found. It may have expired, been deleted, or already viewed (if single-view mode)."
             );
           }
-          throw new Error("Failed to retrieve clipboard");
+          throw new Error(errorData.error || "Failed to retrieve clipboard");
         }
 
         const data = await response.json();
 
-        // Get salt from URL fragment if available, otherwise use server's salt
-        let salt = manualSalt;
+        // Try to get salt from: 1) manualSalt param, 2) storedSalt state, 3) URL fragment, 4) server data
+        let salt = manualSalt || storedSalt;
         if (!salt && typeof window !== "undefined") {
           const hash = window.location.hash.slice(1);
           if (hash) {
@@ -120,17 +187,10 @@ export function RetrieveView() {
           }
         }
 
-        // If no salt from fragment, use the one from server
-        // Note: In a true zero-knowledge setup, the salt should come from the URL fragment
-        // This is a fallback for manual code entry where user doesn't have the magic link
-        if (!salt) {
-          salt = data.salt;
-        }
-
         // Decrypt locally
         const finalSalt = salt || data.salt;
         if (!finalSalt) {
-          throw new Error("Unable to retrieve decryption key");
+          throw new Error("Unable to retrieve decryption key. Use the magic link or ensure you have the correct URL.");
         }
         const decryptedJson = await decryptData(data.encrypted, targetCode, finalSalt);
         const content: ClipboardContent = JSON.parse(decryptedJson);
@@ -143,6 +203,38 @@ export function RetrieveView() {
         });
         setShowResult(true);
         setCode([]);
+
+        // Auto-copy text to clipboard or download file
+        if (content.type === "text" && content.text) {
+          try {
+            await navigator.clipboard.writeText(content.text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 3000);
+          } catch {
+            // Clipboard permission denied, will show manual copy button
+          }
+        } else if ((content.type === "file" || content.type === "image") && content.data && content.name) {
+          // Auto-download file
+          try {
+            const byteCharacters = atob(content.data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: content.mimeType || "application/octet-stream" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = content.name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+          } catch {
+            // Download failed, will show manual download button
+          }
+        }
       } catch (err) {
         setError((err as Error).message);
       } finally {
@@ -239,7 +331,7 @@ export function RetrieveView() {
 
       {/* Code Display */}
       <motion.div
-        className="mb-8"
+        className="mb-4"
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, delay: 0.1 }}
@@ -257,6 +349,26 @@ export function RetrieveView() {
               {code[i] || ""}
             </div>
           ))}
+        </div>
+      </motion.div>
+
+      {/* URL/Code Paste Input */}
+      <motion.div
+        className="mb-4"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.15 }}
+      >
+        <div className="relative">
+          <Link2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={urlInputRef}
+            type="text"
+            placeholder="Paste URL, magic link, or 6-digit code"
+            value={urlInput}
+            onChange={handleUrlPaste}
+            className="pl-10 pr-4"
+          />
         </div>
       </motion.div>
 
@@ -374,6 +486,29 @@ export function RetrieveView() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
             >
+              {/* Auto-action notification */}
+              {copied && retrievedData.content.type === "text" && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 rounded-lg bg-green-500/10 px-4 py-2 text-sm text-green-600"
+                >
+                  <Check className="h-4 w-4" />
+                  <span>Text has been copied to your clipboard!</span>
+                </motion.div>
+              )}
+              
+              {(retrievedData.content.type === "file" || retrievedData.content.type === "image") && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 rounded-lg bg-blue-500/10 px-4 py-2 text-sm text-blue-600"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>File has been automatically downloaded!</span>
+                </motion.div>
+              )}
+
               {/* Content Display */}
               <div className="rounded-xl bg-muted p-4">
                 {retrievedData.content.type === "text" && (
