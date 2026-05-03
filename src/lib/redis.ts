@@ -34,8 +34,13 @@ export async function storeClipboardEntry(
   expiryMode: ExpiryMode
 ): Promise<boolean> {
   try {
+    console.log(`[Redis] Storing clipboard: ${code}, mode: ${expiryMode}`);
+    
     const expiryOption = EXPIRY_OPTIONS.find((o) => o.value === expiryMode);
-    if (!expiryOption) return false;
+    if (!expiryOption) {
+      console.error(`[Redis] Invalid expiry mode: ${expiryMode}`);
+      return false;
+    }
 
     const ttlSeconds = expiryOption.seconds;
     const expiresAt = Date.now() + ttlSeconds * 1000;
@@ -47,12 +52,16 @@ export async function storeClipboardEntry(
       maxViews: expiryMode === "1view" ? 1 : undefined,
     };
 
+    console.log(`[Redis] Entry data: maxViews=${entryWithMeta.maxViews}, viewCount=${entryWithMeta.viewCount}, TTL=${ttlSeconds}s`);
+
     // Use SETEX to store with TTL - Redis will auto-delete after expiry
     await redis.setex(`clipboard:${code}`, ttlSeconds, JSON.stringify(entryWithMeta));
+    
+    console.log(`[Redis] Successfully stored: ${code}`);
 
     return true;
   } catch (error) {
-    console.error("Redis store error:", error);
+    console.error("[Redis] storeClipboardEntry error:", error);
     return false;
   }
 }
@@ -61,13 +70,25 @@ export async function getClipboardEntry(
   code: string
 ): Promise<ClipboardEntry | null> {
   try {
-    const data = await redis.get<string>(`clipboard:${code}`);
-    if (!data) return null;
+    console.log(`[Redis] Getting clipboard: ${code}`);
+    const data = await redis.get<string | ClipboardEntry>(`clipboard:${code}`);
+    if (!data) {
+      console.log(`[Redis] No data found for: ${code}`);
+      return null;
+    }
 
-    const entry: ClipboardEntry = JSON.parse(data);
+    // Handle both string (needs parsing) and object (already parsed)
+    let entry: ClipboardEntry;
+    if (typeof data === 'string') {
+      entry = JSON.parse(data);
+    } else {
+      entry = data as ClipboardEntry;
+    }
+    console.log(`[Redis] Found entry: ${code}, maxViews: ${entry.maxViews}, viewCount: ${entry.viewCount}, expires: ${new Date(entry.expiresAt).toISOString()}`);
 
     // Check if single-view and already viewed
-    if (entry.maxViews === 1 && entry.viewCount && entry.viewCount >= 1) {
+    if (entry.maxViews === 1 && entry.viewCount != null && entry.viewCount >= 1) {
+      console.log(`[Redis] Single-view already accessed: ${code}`);
       // Already viewed, delete it
       await redis.del(`clipboard:${code}`);
       return null;
@@ -75,9 +96,11 @@ export async function getClipboardEntry(
 
     // Increment view count for single-view items
     if (entry.maxViews === 1) {
-      entry.viewCount = (entry.viewCount || 0) + 1;
+      entry.viewCount = (entry.viewCount ?? 0) + 1;
+      console.log(`[Redis] Incrementing viewCount to ${entry.viewCount} for: ${code}`);
       // Update with remaining TTL
       const ttl = Math.ceil((entry.expiresAt - Date.now()) / 1000);
+      console.log(`[Redis] Updating TTL: ${ttl}s for: ${code}`);
       if (ttl > 0) {
         await redis.setex(`clipboard:${code}`, ttl, JSON.stringify(entry));
       }
@@ -85,7 +108,7 @@ export async function getClipboardEntry(
 
     return entry;
   } catch (error) {
-    console.error("Redis get error:", error);
+    console.error("[Redis] getClipboardEntry error:", error);
     return null;
   }
 }
@@ -126,3 +149,4 @@ export async function generateUniqueCode(): Promise<string> {
   // Fallback: use timestamp + random to ensure uniqueness
   return (Date.now() % 1000000).toString().padStart(6, "0");
 }
+483767
