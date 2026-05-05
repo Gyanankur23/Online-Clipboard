@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     // Generate the magic link
     const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`;
-    const fragment = btoa(JSON.stringify({ code, salt }));
+    const fragment = Buffer.from(JSON.stringify({ code, salt })).toString('base64');
     const magicLink = `${baseUrl}/retrieve/${code}#${fragment}`;
 
     return NextResponse.json({
