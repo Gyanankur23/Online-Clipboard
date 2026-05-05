@@ -205,18 +205,23 @@ export function RetrieveView() {
         setCode([]);
 
         // Auto-copy text to clipboard or download file
-        if (content.type === "text" && content.text) {
+        if (content.type === "text" && content.content) {
           try {
-            await navigator.clipboard.writeText(content.text);
+            await navigator.clipboard.writeText(content.content);
             setCopied(true);
             setTimeout(() => setCopied(false), 3000);
           } catch {
             // Clipboard permission denied, will show manual copy button
           }
-        } else if ((content.type === "file" || content.type === "image") && content.data && content.name) {
+        } else if ((content.type === "file" || content.type === "image") && content.content && content.filename) {
           // Auto-download file
           try {
-            const byteCharacters = atob(content.data);
+            // Handle both data URLs (images) and raw base64 (files)
+            let base64Data = content.content;
+            if (base64Data.includes(',')) {
+              base64Data = base64Data.split(',')[1];
+            }
+            const byteCharacters = atob(base64Data);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
               byteNumbers[i] = byteCharacters.charCodeAt(i);
@@ -226,7 +231,7 @@ export function RetrieveView() {
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");
             link.href = url;
-            link.download = content.name;
+            link.download = content.filename;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -289,7 +294,12 @@ export function RetrieveView() {
     if (!retrievedData?.content) return;
 
     const { content, filename, mimeType } = retrievedData.content;
-    const byteString = atob(content);
+    // Handle both data URLs (images) and raw base64 (files)
+    let base64Data = content;
+    if (base64Data.includes(',')) {
+      base64Data = base64Data.split(',')[1];
+    }
+    const byteString = atob(base64Data);
     const ab = new ArrayBuffer(byteString.length);
     const ia = new Uint8Array(ab);
     for (let i = 0; i < byteString.length; i++) {

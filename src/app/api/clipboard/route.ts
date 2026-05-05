@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   storeClipboardEntry,
   generateUniqueCode,
+  checkCodeExists,
   type ExpiryMode,
 } from "@/lib/redis";
 
@@ -9,6 +10,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const {
+      code: clientCode,
       encrypted,
       salt,
       type,
@@ -18,15 +20,27 @@ export async function POST(request: NextRequest) {
     } = body;
 
     // Validate required fields
-    if (!encrypted || !salt || !type) {
+    if (!clientCode || !encrypted || !salt || !type) {
       return NextResponse.json(
         { error: "Missing required fields" },
         { status: 400 }
       );
     }
 
-    // Generate unique 6-digit code
-    const code = await generateUniqueCode();
+    // Validate code format
+    if (!/^\d{6}$/.test(clientCode)) {
+      return NextResponse.json(
+        { error: "Invalid code format" },
+        { status: 400 }
+      );
+    }
+
+    // Check if code already exists, if so generate a new unique one
+    let code = clientCode;
+    const exists = await checkCodeExists(code);
+    if (exists) {
+      code = await generateUniqueCode();
+    }
 
     // Store in Redis with TTL
     const success = await storeClipboardEntry(code, {

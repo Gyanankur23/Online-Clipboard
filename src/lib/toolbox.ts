@@ -149,7 +149,7 @@ export function renderMarkdown(input: string): ToolResult {
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
       // Lists
       .replace(/^\s*-\s+(.*$)/gim, "<li>$1</li>")
-      .replace(/(<li>.*<\/li>)/s, "<ul>$1</ul>")
+      .replace(/(<li>[\s\S]*?<\/li>)/, "<ul>$1</ul>")
       // Blockquotes
       .replace(/^\> (.*$)/gim, "<blockquote>$1</blockquote>")
       // Line breaks

@@ -42,7 +42,7 @@ export async function deriveKey(
   return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt,
+      salt: salt.buffer as ArrayBuffer,
       iterations: 100000,
       hash: "SHA-256",
     },
@@ -84,10 +84,10 @@ export async function encryptData(
   return {
     encrypted: {
       ciphertext: arrayBufferToBase64(ciphertext),
-      iv: arrayBufferToBase64(iv),
+      iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
       tag: "", // GCM auth tag is included in ciphertext
     },
-    salt: arrayBufferToBase64(salt),
+    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer),
   };
 }
 

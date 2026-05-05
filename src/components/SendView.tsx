@@ -63,6 +63,7 @@ export function SendView() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          code,
           encrypted,
           salt,
           type: content.type,
