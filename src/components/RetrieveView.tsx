@@ -52,12 +52,29 @@ export function RetrieveView() {
   // Extract code and salt from URL or fragment
   const extractFromUrl = useCallback((url: string): { code: string; salt?: string } | null => {
     try {
-      // Check if it's a full URL
+      // Check if it's a URL with /retrieve/[code]
       if (url.includes('/retrieve/')) {
         const codeMatch = url.match(/\/retrieve\/(\d{6})/);
         const hashMatch = url.match(/#(.+)$/);
         if (codeMatch) {
           const code = codeMatch[1];
+          let salt: string | undefined;
+          if (hashMatch) {
+            const fragment = parseMagicLinkFragment(hashMatch[1]);
+            if (fragment && fragment.code === code) {
+              salt = fragment.salt;
+            }
+          }
+          return { code, salt };
+        }
+      }
+
+      // Check if it has ?retrieve=[code] query param
+      if (url.includes('retrieve=')) {
+        const queryMatch = url.match(/[?&]retrieve=(\d{6})/);
+        const hashMatch = url.match(/#(.+)$/);
+        if (queryMatch) {
+          const code = queryMatch[1];
           let salt: string | undefined;
           if (hashMatch) {
             const fragment = parseMagicLinkFragment(hashMatch[1]);
@@ -80,26 +97,6 @@ export function RetrieveView() {
       return null;
     }
   }, []);
-
-  // Check URL fragment on mount (magic link handling)
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const hash = window.location.hash.slice(1);
-      const fullUrl = window.location.href;
-      
-      // Try to extract from full URL first
-      const extracted = extractFromUrl(fullUrl) || (hash ? extractFromUrl(`/#${hash}`) : null);
-      
-      if (extracted) {
-        setCode(extracted.code.split(""));
-        setUrlInput(extracted.code);
-        // Store salt for decryption
-        if (extracted.salt) {
-          setStoredSalt(extracted.salt);
-        }
-      }
-    }
-  }, [extractFromUrl]);
 
   const handleKeyPress = useCallback(
     (key: string) => {
@@ -127,27 +124,6 @@ export function RetrieveView() {
       urlInputRef.current?.focus();
     }
   }, [isLoading]);
-
-  // Handle URL/code paste
-  const handleUrlPaste = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setUrlInput(value);
-    
-    const extracted = extractFromUrl(value);
-    if (extracted) {
-      setCode(extracted.code.split(""));
-      setError(null);
-      if (extracted.salt) {
-        setStoredSalt(extracted.salt);
-      }
-      // Auto-trigger retrieve after a short delay
-      setTimeout(() => {
-        if (extracted.code.length === 6) {
-          handleRetrieve(extracted.code, extracted.salt);
-        }
-      }, 100);
-    }
-  }, [extractFromUrl]);
 
   const handleRetrieve = useCallback(
     async (manualCode?: string, manualSalt?: string) => {
@@ -246,8 +222,53 @@ export function RetrieveView() {
         setIsLoading(false);
       }
     },
-    [code]
+    [code, storedSalt]
   );
+
+  // Check URL fragment or query on mount (magic link handling)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hash = window.location.hash.slice(1);
+      const fullUrl = window.location.href;
+      
+      // Try to extract from full URL first
+      const extracted = extractFromUrl(fullUrl) || (hash ? extractFromUrl(`/#${hash}`) : null);
+      
+      if (extracted) {
+        setCode(extracted.code.split(""));
+        setUrlInput(extracted.code);
+        // Store salt for decryption
+        if (extracted.salt) {
+          setStoredSalt(extracted.salt);
+        }
+        // Auto trigger retrieval
+        setTimeout(() => {
+          handleRetrieve(extracted.code, extracted.salt);
+        }, 150);
+      }
+    }
+  }, [extractFromUrl, handleRetrieve]);
+
+  // Handle URL/code paste
+  const handleUrlPaste = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setUrlInput(value);
+    
+    const extracted = extractFromUrl(value);
+    if (extracted) {
+      setCode(extracted.code.split(""));
+      setError(null);
+      if (extracted.salt) {
+        setStoredSalt(extracted.salt);
+      }
+      // Auto-trigger retrieve after a short delay
+      setTimeout(() => {
+        if (extracted.code.length === 6) {
+          handleRetrieve(extracted.code, extracted.salt);
+        }
+      }, 100);
+    }
+  }, [extractFromUrl, handleRetrieve]);
 
   const handleDelete = useCallback(async () => {
     if (!retrievedData) return;

@@ -15,8 +15,8 @@ export default function RetrieveRedirectPage() {
     // The fragment (#...) is preserved by the browser and available in window.location.hash
     // Redirect to main page with auto-retrieve triggered by the fragment
     if (code && /^\d{6}$/.test(code)) {
-      // The hash will be automatically handled by the RetrieveView component
-      router.push(`/?retrieve=${code}`);
+      const hash = typeof window !== "undefined" ? window.location.hash : "";
+      router.push(`/?retrieve=${code}${hash}`);
     }
   }, [code, router]);
 

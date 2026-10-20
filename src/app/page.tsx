@@ -136,7 +136,16 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.3 }}
         >
-          <Tabs defaultValue="send" className="w-full">
+          <Tabs
+            defaultValue={
+              typeof window !== "undefined" &&
+              (window.location.search.includes("retrieve=") ||
+                window.location.hash.length > 0)
+                ? "retrieve"
+                : "send"
+            }
+            className="w-full"
+          >
             <TabsList className="mx-auto mb-8 grid w-full max-w-md grid-cols-2">
               <TabsTrigger value="send" className="gap-2">
                 <Zap className="h-4 w-4" />
