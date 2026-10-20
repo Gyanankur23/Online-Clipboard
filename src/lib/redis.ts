@@ -149,4 +149,4 @@ export async function generateUniqueCode(): Promise<string> {
   // Fallback: use timestamp + random to ensure uniqueness
   return (Date.now() % 1000000).toString().padStart(6, "0");
 }
-483767
+
