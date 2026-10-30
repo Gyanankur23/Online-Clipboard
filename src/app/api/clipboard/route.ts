@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { crypto } from "next/dist/compiled/@edge-runtime/primitives"; // Edge safe crypto
 import {
   storeClipboardEntry,
-  generateUniqueCode,
-  checkCodeExists,
+  createCodeAlias,
   type ExpiryMode,
 } from "@/lib/redis";
+
+// Enforce Edge Runtime compatibility
+export const runtime = "edge";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const {
-      code: clientCode,
+      clientCode, // The optional 6-digit display code for manual typing
       encrypted,
       salt,
       type,
@@ -19,36 +22,24 @@ export async function POST(request: NextRequest) {
       expiryMode = "10min",
     } = body;
 
-    // Validate required fields
-    if (!clientCode || !encrypted || !salt || !type) {
+    // Validate core payload requirements
+    if (!encrypted || !salt || !type) {
       return NextResponse.json(
         { error: "Missing required fields" },
         { status: 400 }
       );
     }
 
-    // Validate code format
-    if (!/^\d{6}$/.test(clientCode)) {
-      return NextResponse.json(
-        { error: "Invalid code format" },
-        { status: 400 }
-      );
-    }
+    // 1. FIX: Generate a cryptographically secure UUID for database isolation
+    const storageId = globalThis.crypto.randomUUID();
 
-    // Check if code already exists, if so generate a new unique one
-    let code = clientCode;
-    const exists = await checkCodeExists(code);
-    if (exists) {
-      code = await generateUniqueCode();
-    }
-
-    // Store in Redis with TTL
-    const success = await storeClipboardEntry(code, {
+    // 2. Store the primary encrypted payload using the high-entropy storageId
+    const success = await storeClipboardEntry(storageId, {
       encrypted,
-      salt,
       type,
       filename,
       mimeType,
+      expiryMode
     }, expiryMode as ExpiryMode);
 
     if (!success) {
@@ -58,14 +49,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate the magic link
+    // 3. FIX: Handle the 6-digit mobile handoff code purely as a short-lived alias
+    let code = clientCode;
+    if (code && /^\d{6}$/.test(code)) {
+      // Map the 6-digit code to the storageId with a strict 3-minute TTL max
+      await createCodeAlias(code, storageId, "3min");
+    } else {
+      code = null; 
+    }
+
+    // 4. FIX: Edge-compliant Base64 utility (Avoids using Node's Buffer API)
+    const fragmentData = JSON.stringify({ storageId, salt });
+    const encodedFragment = btoa(encodeURIComponent(fragmentData));
+
+    // 5. Build secure magic link (The true database ID stays in the non-server-readable hash)
     const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`;
-    const fragment = Buffer.from(JSON.stringify({ code, salt })).toString('base64');
-    const magicLink = `${baseUrl}/retrieve/${code}#${fragment}`;
+    const magicLink = `${baseUrl}/retrieve#${encodedFragment}`;
 
     return NextResponse.json({
       success: true,
-      code,
+      code, // Returned only for manual cross-device entry displays
       magicLink,
       expiresIn: expiryMode,
     });
