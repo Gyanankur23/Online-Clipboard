@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SendView } from "@/components/SendView";
@@ -10,11 +10,19 @@ import { ClipboardContent } from "@/components/UniversalInput";
 import { Clipboard, Shield, Zap, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "next-themes";
+import { useSearchParams } from "next/navigation";
 
 export default function Home() {
   const [currentContent, setCurrentContent] = useState<string>("");
   const { theme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
+  const searchParams = useSearchParams();
+
+  // 1. FIX: Read the secure ID & Salt parameters safely out of the routing hooks
+  const storageId = searchParams.get("storageId");
+  const salt = searchParams.get("salt");
+  
+  // Explicitly check if we are pulling a record based on routing presence
+  const isRetrieving = !!(storageId && salt);
 
   // Handle content change from UniversalInput
   const handleContentChange = (content: ClipboardContent | null) => {
@@ -136,14 +144,9 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.3 }}
         >
+          {/* FIX: Set the default active viewing layout context based on parameter existence */}
           <Tabs
-            defaultValue={
-              typeof window !== "undefined" &&
-              (window.location.search.includes("retrieve=") ||
-                window.location.hash.length > 0)
-                ? "retrieve"
-                : "send"
-            }
+            defaultValue={isRetrieving ? "retrieve" : "send"}
             className="w-full"
           >
             <TabsList className="mx-auto mb-8 grid w-full max-w-md grid-cols-2">
@@ -162,7 +165,8 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="retrieve" className="mt-0">
-              <RetrieveView />
+              {/* FIX: Forward parameters directly into the component state lifecycle */}
+              <RetrieveView prefillStorageId={storageId} prefillSalt={salt} />
             </TabsContent>
           </Tabs>
         </motion.div>
