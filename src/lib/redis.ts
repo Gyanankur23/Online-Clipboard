@@ -1,9 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { ExpiryMode, EXPIRY_OPTIONS } from "./constants";
 
-// Redis client for temporary clipboard storage
-// Uses SETEX for automatic TTL (expiration)
-
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL || "",
   token: process.env.UPSTASH_REDIS_REST_TOKEN || "",
@@ -24,23 +21,33 @@ export interface ClipboardEntry {
   viewCount?: number;
 }
 
-// Re-export for backward compatibility
 export type { ExpiryMode } from "./constants";
 export { EXPIRY_OPTIONS };
 
+/**
+ * 1. FIX: Ephemeral 6-digit alias configuration for mobile-to-desktop typing
+ */
+export async function createCodeAlias(code: string, storageId: string, expiryMode: ExpiryMode): Promise<void> {
+  const expiryOption = EXPIRY_OPTIONS.find((o) => o.value === expiryMode) || { seconds: 180 };
+  // Short codes should expire rapidly (e.g. 3 minutes max)
+  await redis.setex(`alias:${code}`, expiryOption.seconds, storageId);
+}
+
+export async function resolveCodeAlias(code: string): Promise<string | null> {
+  return await redis.get<string>(`alias:${code}`);
+}
+
+/**
+ * 2. Store clipboard payload using high-entropy UUIDs
+ */
 export async function storeClipboardEntry(
-  code: string,
+  storageId: string,
   entry: Omit<ClipboardEntry, "expiresAt" | "viewCount">,
   expiryMode: ExpiryMode
 ): Promise<boolean> {
   try {
-    console.log(`[Redis] Storing clipboard: ${code}, mode: ${expiryMode}`);
-    
     const expiryOption = EXPIRY_OPTIONS.find((o) => o.value === expiryMode);
-    if (!expiryOption) {
-      console.error(`[Redis] Invalid expiry mode: ${expiryMode}`);
-      return false;
-    }
+    if (!expiryOption) return false;
 
     const ttlSeconds = expiryOption.seconds;
     const expiresAt = Date.now() + ttlSeconds * 1000;
@@ -52,13 +59,7 @@ export async function storeClipboardEntry(
       maxViews: expiryMode === "1view" ? 1 : undefined,
     };
 
-    console.log(`[Redis] Entry data: maxViews=${entryWithMeta.maxViews}, viewCount=${entryWithMeta.viewCount}, TTL=${ttlSeconds}s`);
-
-    // Use SETEX to store with TTL - Redis will auto-delete after expiry
-    await redis.setex(`clipboard:${code}`, ttlSeconds, JSON.stringify(entryWithMeta));
-    
-    console.log(`[Redis] Successfully stored: ${code}`);
-
+    await redis.setex(`clipboard:${storageId}`, ttlSeconds, JSON.stringify(entryWithMeta));
     return true;
   } catch (error) {
     console.error("[Redis] storeClipboardEntry error:", error);
@@ -66,87 +67,57 @@ export async function storeClipboardEntry(
   }
 }
 
-export async function getClipboardEntry(
-  code: string
-): Promise<ClipboardEntry | null> {
+/**
+ * 3. FIX: Atomic Read-and-Destroy Lua script configuration to defeat race conditions
+ */
+export async function getClipboardEntry(storageId: string): Promise<ClipboardEntry | null> {
   try {
-    console.log(`[Redis] Getting clipboard: ${code}`);
-    const data = await redis.get<string | ClipboardEntry>(`clipboard:${code}`);
-    if (!data) {
-      console.log(`[Redis] No data found for: ${code}`);
-      return null;
-    }
+    const key = `clipboard:${storageId}`;
 
-    // Handle both string (needs parsing) and object (already parsed)
-    let entry: ClipboardEntry;
-    if (typeof data === 'string') {
-      entry = JSON.parse(data);
-    } else {
-      entry = data as ClipboardEntry;
-    }
-    console.log(`[Redis] Found entry: ${code}, maxViews: ${entry.maxViews}, viewCount: ${entry.viewCount}, expires: ${new Date(entry.expiresAt).toISOString()}`);
+    // LUA Script executed natively on Upstash cluster infrastructure
+    const luaScript = `
+      local data = redis.call('GET', KEYS[1])
+      if not data then return nil end
+      
+      local entry = json.decode(data)
+      if entry['maxViews'] == 1 then
+        redis.call('DEL', KEYS[1])
+      end
+      return data
+    `;
 
-    // Check if single-view and already viewed
-    if (entry.maxViews === 1 && entry.viewCount != null && entry.viewCount >= 1) {
-      console.log(`[Redis] Single-view already accessed: ${code}`);
-      // Already viewed, delete it
-      await redis.del(`clipboard:${code}`);
-      return null;
-    }
+    // Execute atomically
+    const rawData = await redis.eval(luaScript, [key], []);
+    
+    if (!rawData) return null;
 
-    // Increment view count for single-view items
-    if (entry.maxViews === 1) {
-      entry.viewCount = (entry.viewCount ?? 0) + 1;
-      console.log(`[Redis] Incrementing viewCount to ${entry.viewCount} for: ${code}`);
-      // Update with remaining TTL
-      const ttl = Math.ceil((entry.expiresAt - Date.now()) / 1000);
-      console.log(`[Redis] Updating TTL: ${ttl}s for: ${code}`);
-      if (ttl > 0) {
-        await redis.setex(`clipboard:${code}`, ttl, JSON.stringify(entry));
-      }
-    }
-
-    return entry;
+    return typeof rawData === 'string' ? JSON.parse(rawData) : (rawData as ClipboardEntry);
   } catch (error) {
     console.error("[Redis] getClipboardEntry error:", error);
     return null;
   }
 }
 
-export async function deleteClipboardEntry(code: string): Promise<boolean> {
+export async function deleteClipboardEntry(storageId: string): Promise<boolean> {
   try {
-    await redis.del(`clipboard:${code}`);
+    await redis.del(`clipboard:${storageId}`);
     return true;
   } catch (error) {
-    console.error("Redis delete error:", error);
     return false;
   }
 }
 
 export async function checkCodeExists(code: string): Promise<boolean> {
-  try {
-    const exists = await redis.exists(`clipboard:${code}`);
-    return exists === 1;
-  } catch (error) {
-    console.error("Redis exists error:", error);
-    return false;
-  }
+  const exists = await redis.exists(`alias:${code}`);
+  return exists === 1;
 }
 
 export async function generateUniqueCode(): Promise<string> {
   let attempts = 0;
-  const maxAttempts = 10;
-
-  while (attempts < maxAttempts) {
+  while (attempts < 10) {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const exists = await checkCodeExists(code);
-    if (!exists) {
-      return code;
-    }
+    if (!(await checkCodeExists(code))) return code;
     attempts++;
   }
-
-  // Fallback: use timestamp + random to ensure uniqueness
   return (Date.now() % 1000000).toString().padStart(6, "0");
 }
-
