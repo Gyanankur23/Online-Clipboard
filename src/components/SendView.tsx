@@ -49,21 +49,26 @@ export function SendView() {
 
     setIsSending(true);
     try {
-      // Generate code and encrypt locally
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      // 1. Generate an ephemeral 6-digit reference alias for cross-device manual entry display
+      const shortCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-      // Encrypt the content
+      // 2. Generate a secure high-entropy random passphrase for true browser-isolated zero-knowledge setup
+      const localRandomEntropy = Array.from(window.crypto.getRandomValues(new Uint8Array(24)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      // 3. Encrypt the content locally with high-entropy instead of a simple 6-digit space
       const { encrypted, salt } = await encryptData(
         JSON.stringify(content),
-        code
+        localRandomEntropy
       );
 
-      // Send to server (encrypted blob only)
+      // 4. Send to server using updated layout properties matching the Edge route
       const response = await fetch("/api/clipboard", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code,
+          clientCode: shortCode, // FIX: Matches our secure route structure
           encrypted,
           salt,
           type: content.type,
@@ -74,19 +79,23 @@ export function SendView() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to send clipboard");
+        throw new Error("Failed to send clipboard storage payload configuration");
       }
 
       const data = await response.json();
+      
+      // 5. Append the local randomized passphrase to the hash fragment returned from the server
+      const updatedMagicLink = `${data.magicLink}&key=${localRandomEntropy}`;
+
       setResult({
-        code: data.code,
-        magicLink: data.magicLink,
+        code: data.code || shortCode,
+        magicLink: updatedMagicLink,
       });
       setShowSuccess(true);
       setContent(null);
     } catch (error) {
       console.error("Send error:", error);
-      alert("Failed to send clipboard. Please try again.");
+      alert("Failed to send clipboard. Please check server validation routes.");
     } finally {
       setIsSending(false);
     }
@@ -96,11 +105,6 @@ export function SendView() {
     navigator.clipboard.writeText(text);
     setCopied(type);
     setTimeout(() => setCopied(null), 2000);
-  }, []);
-
-  const handleClose = useCallback(() => {
-    setShowSuccess(false);
-    setResult(null);
   }, []);
 
   return (
@@ -190,7 +194,7 @@ export function SendView() {
                 {/* 6-Digit Code */}
                 <div className="rounded-xl bg-primary/10 p-4 text-center">
                   <p className="mb-1 text-sm text-muted-foreground">
-                    6-Digit Code
+                    6-Digit Code (Mobile Handoff Link)
                   </p>
                   <div className="flex items-center justify-center gap-3">
                     <span className="text-3xl font-bold tracking-wider text-primary">
@@ -246,15 +250,11 @@ export function SendView() {
                     never sent to the server
                   </p>
                 </div>
-
-                {/* QR Code */}
-                <div className="flex justify-center">
-                  <QRCodeDisplay url={result.magicLink} size={180} />
+                
+                {/* QR Code Presentation Context Container */}
+                <div className="flex justify-center border-t border-border/40 pt-4">
+                  <QRCodeDisplay value={result.magicLink} />
                 </div>
-
-                <Button onClick={handleClose} className="w-full">
-                  Create Another
-                </Button>
               </motion.div>
             )}
           </AnimatePresence>
